@@ -1,0 +1,8 @@
+name: WolfKill
+version: '${project.version}'
+main: com.azazo1.wolfkill.WolfKill
+api-version: '1.20'
+
+commands:
+  startwolfkill:
+    description: 启动狼人杀游戏
