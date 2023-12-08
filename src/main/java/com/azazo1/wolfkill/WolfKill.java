@@ -54,21 +54,13 @@ public final class WolfKill extends JavaPlugin implements Listener {
     public static final int RADIUS = 200; // 可行动的范围（半径，距离源）
     public static final int MEETING_DURATION_SEC = 60 * 2; // 会议时间（秒）
     public static final int STARTING_EFFECT_DURATION = 1 * 60; // 开局药水效果时长（秒）
-    public Location center; // 可行动范围的中心点
-    public Location sourceStart; // 源的起始位置
-    public Location sourceEnd; // 源的末端位置
-
-    public Location targetStart; // 目标的起始位置
-    public Location meetingButton; // 紧急会议按钮
     public Location meetingSpawnLocation; // 紧急会议传送点
-    public Location checkButton; // 检查目标房间是否造好的按钮
-    public final HashMap<Location, Boolean> signLocations = new HashMap<>(); // 信标坐标,是否领取
-    public final Vector<ItemStack> signRewards = new Vector<>(); // 信标奖励（狼人专属，随机选择一个）
+    public final Vector<ItemStack> beaconRewards = new Vector<>(); // 信标奖励（狼人专属，随机选择一个）
     public final HashMap<Player, Boolean> isWolf = new HashMap<>(); // 玩家进入世界时获得身份（未开始游戏时）
     public final HashMap<Player, Location> playerLastLocation = new HashMap<>(); // 玩家上一时刻位置（用于把玩家在会议结束时传送回主世界和防止玩家超出行走范围
     public static final ItemStack meetingKeyItem = new ItemStack(Material.GOLD_INGOT, 5); // 玩家开启会议的必需物品
     public volatile GameState state = GameState.PRE_GAMING;
-    public World overworld; // 主世界
+    public World gameworld; // 游戏世界
     public World meetingWorld; // 会议世界
     public final HashMap<Player, Player> voting = new HashMap<>(); // 会议中的投票情况（在非会议过程中此值无效）
     public volatile long gameStartTime = -1; // 游戏开始时间
@@ -78,38 +70,27 @@ public final class WolfKill extends JavaPlugin implements Listener {
     }
 
     public BossBar remainTimeBar;
+    public GameWorldIniter gameWorldIniter;
 
     @Override
     public void onEnable() {
         Bukkit.getPluginCommand("startwolfkill").setExecutor(this);
         Bukkit.getPluginManager().registerEvents(this, this);
-        // 保存源和目的房屋位置
-        overworld = Bukkit.getWorld("world");
-        if (overworld == null) {
-            Bukkit.getLogger().log(Level.SEVERE, "无法加载主世界");
-            Bukkit.shutdown();
-            return;
-        }
-        sourceStart = new Location(overworld, -105, 69, -2);
-        sourceEnd = new Location(overworld, -98, 75, 5);
-        targetStart = new Location(overworld, -168, 71, 46);
-        checkButton = new Location(overworld, -165, 73, 43);
-        center = new Location(overworld, -129, 70, -22);
-        meetingButton = new Location(overworld, -115, 69, -7);
-
-        signLocations.put(new Location(overworld, 8, 121, -20), false);
-        signLocations.put(new Location(overworld, -177, 111, 141), false);
-        signLocations.put(new Location(overworld, -257, 71, -52), false);
-
-        signRewards.add(new ItemStack(Material.CREEPER_SPAWN_EGG, 1));
+        // 初始化游戏世界
+        gameWorldIniter = new GameWorldIniter();
+        gameworld = gameWorldIniter.initWorld();
+        gameWorldIniter.selectCenter();
+        gameWorldIniter.selectBeacons();
+        // 初始化信标奖励
+        beaconRewards.add(new ItemStack(Material.CREEPER_SPAWN_EGG, 1));
         ItemStack killingSword = new ItemStack(Material.GOLDEN_SWORD, 1);
         ItemMeta im = killingSword.getItemMeta();
         im.addEnchant(Enchantment.DAMAGE_ALL, 6, true);
         ((Damageable) im).setDamage(31);
         killingSword.setItemMeta(im);
-        signRewards.add(killingSword);
-        signRewards.add(new ItemStack(Material.DIRT, 1));
-
+        beaconRewards.add(killingSword);
+        beaconRewards.add(new ItemStack(Material.DIRT, 1));
+        // 加载会议世界
         meetingWorld = Bukkit.createWorld(new WorldCreator("meeting"));
         if (meetingWorld == null) {
             Bukkit.getLogger().log(Level.SEVERE, "无法加载紧急会议世界");
@@ -117,16 +98,15 @@ public final class WolfKill extends JavaPlugin implements Listener {
             return;
         }
         meetingSpawnLocation = new Location(meetingWorld, 9, -57, 1);
-
     }
 
     // 检查目标和源是否相同
     public boolean checkBuildFinish() {
-        for (int x = 0; x <= sourceEnd.getBlockX() - sourceStart.getBlockX(); x++) {
-            for (int y = 0; y <= sourceEnd.getBlockY() - sourceStart.getBlockY(); y++) {
-                for (int z = 0; z < sourceEnd.getBlockZ() - sourceStart.getBlockZ(); z++) {
-                    Block target = targetStart.clone().add(x, y, z).getBlock();
-                    Block source = sourceStart.clone().add(x, y, z).getBlock();
+        for (int x = 0; x <= gameWorldIniter.sourceEnd.getBlockX() - gameWorldIniter.sourceStart.getBlockX(); x++) {
+            for (int y = 0; y <= gameWorldIniter.sourceEnd.getBlockY() - gameWorldIniter.sourceStart.getBlockY(); y++) {
+                for (int z = 0; z < gameWorldIniter.sourceEnd.getBlockZ() - gameWorldIniter.sourceStart.getBlockZ(); z++) {
+                    Block target = gameWorldIniter.targetStart.clone().add(x, y, z).getBlock();
+                    Block source = gameWorldIniter.sourceStart.clone().add(x, y, z).getBlock();
                     if (target.getType() != source.getType()) {
 //                        Bukkit.broadcast(Component.text(String.format("%s %s %d %d %d", target.getType().name(), source.getType().name(), x, y, z)));
                         return false;
@@ -160,33 +140,33 @@ public final class WolfKill extends JavaPlugin implements Listener {
             event.setCancelled(true);
             return;
         }
-        if (sourceStart.getBlockX() <= block.getX() && block.getX() <= sourceEnd.getBlockX() &&
-                sourceStart.getBlockZ() <= block.getZ() && block.getZ() <= sourceEnd.getBlockZ() &&
-                sourceStart.getBlockY() <= block.getY() && block.getY() <= sourceEnd.getBlockY()
+        if (gameWorldIniter.sourceStart.getBlockX() <= block.getX() && block.getX() <= gameWorldIniter.sourceEnd.getBlockX() &&
+                gameWorldIniter.sourceStart.getBlockZ() <= block.getZ() && block.getZ() <= gameWorldIniter.sourceEnd.getBlockZ() &&
+                gameWorldIniter.sourceStart.getBlockY() <= block.getY() && block.getY() <= gameWorldIniter.sourceEnd.getBlockY()
         ) {
             event.setCancelled(true);
             player.sendMessage(Component.text("你不能破坏样本房屋").color(TextColor.color(0xff0000)));
         }
-        for (Location signLocation : signLocations.keySet()) { // 检查是否与信标交互（与信标周围方块交互都视为与信标交互）
-            if (block.getX() >= signLocation.getBlockX() - 1 && block.getX() <= signLocation.getBlockX() + 1 &&
-                    block.getY() >= signLocation.getBlockY() - 1 && block.getY() <= signLocation.getBlockY() + 1 &&
-                    block.getZ() >= signLocation.getBlockZ() - 1 && block.getZ() <= signLocation.getBlockZ() + 1
+        for (Location beaconLocation : gameWorldIniter.beaconLocations.keySet()) { // 检查是否与信标交互（与信标周围方块交互都视为与信标交互）
+            if (block.getX() >= beaconLocation.getBlockX() - 1 && block.getX() <= beaconLocation.getBlockX() + 1 &&
+                    block.getY() >= beaconLocation.getBlockY() - 1 && block.getY() <= beaconLocation.getBlockY() + 1 &&
+                    block.getZ() >= beaconLocation.getBlockZ() - 1 && block.getZ() <= beaconLocation.getBlockZ() + 1
             ) {
                 // 防止信标被破坏
                 event.setCancelled(true);
                 // 检查信标是否已经领取过
-                if (signLocations.get(signLocation)) {
+                if (gameWorldIniter.beaconLocations.get(beaconLocation)) {
                     player.sendMessage(Component.text("此狼人道具已被领取"));
                 } else
                     // 检查是否是狼人
                     if (isWolf.get(player)) {
                         player.sendMessage(Component.text("你获取了狼人道具，请检查背包"));
                         // 提供道具
-                        ItemStack is = signRewards.remove(new Random().nextInt(0, signRewards.size()));
+                        ItemStack is = beaconRewards.remove(new Random().nextInt(0, beaconRewards.size()));
                         player.getInventory().addItem(is);
 //                        Bukkit.broadcast(Component.text("广播：有狼人道具被获取！").color(TextColor.color(0xF0AF3E)));
-                        signLocations.put(signLocation, true);
-                        signLocation.clone().add(new org.bukkit.util.Vector(0, -1, 0)).getBlock().setType(Material.AIR); // 将信标下面的方块置空，让信标无法发出射线
+                        gameWorldIniter.beaconLocations.put(beaconLocation, true);
+                        beaconLocation.clone().add(new org.bukkit.util.Vector(0, -1, 0)).getBlock().setType(Material.AIR); // 将信标下面的方块置空，让信标无法发出射线
                     } else {
                         player.sendMessage(Component.text("你不是狼人，无法获取狼人专属道具").color(TextColor.color(0xff0000)));
                     }
@@ -194,7 +174,7 @@ public final class WolfKill extends JavaPlugin implements Listener {
             }
         }
         // checkButton
-        if (locationEquals(block.getLocation(), checkButton)) {
+        if (locationEquals(block.getLocation(), gameWorldIniter.checkButton)) {
             if (state == GameState.GAMING) {
                 if (checkBuildFinish()) {
                     Bukkit.broadcast(Component.text("广播：村民完成了房屋建造").color(TextColor.color(0x00ff00)));
@@ -204,11 +184,11 @@ public final class WolfKill extends JavaPlugin implements Listener {
                 }
             }
             event.setCancelled(true);
-        } else if (locationEquals(block.getLocation(), checkButton.clone().add(new org.bukkit.util.Vector(0, -1, 0)))) {
+        } else if (locationEquals(block.getLocation(), gameWorldIniter.checkButton.clone().add(new org.bukkit.util.Vector(0, -1, 0)))) {
             event.setCancelled(true);
         }
         // meetingButton
-        if (locationEquals(block.getLocation(), meetingButton)) {
+        if (locationEquals(block.getLocation(), gameWorldIniter.meetingButton)) {
             if (state == GameState.GAMING) {
                 // 检查是否有开启会议的物品
                 if (hasKeyItemAndRemove(player)) {
@@ -219,7 +199,7 @@ public final class WolfKill extends JavaPlugin implements Listener {
                 }
             }
             event.setCancelled(true);
-        } else if (locationEquals(block.getLocation(), meetingButton.clone().add(new org.bukkit.util.Vector(0, -1, 0)))) {
+        } else if (locationEquals(block.getLocation(), gameWorldIniter.meetingButton.clone().add(new org.bukkit.util.Vector(0, -1, 0)))) {
             event.setCancelled(true);
         }
     }
@@ -362,9 +342,8 @@ public final class WolfKill extends JavaPlugin implements Listener {
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-
-        player.teleport(center);
-        playerLastLocation.put(player, center);
+        player.teleport(gameWorldIniter.center);
+        playerLastLocation.put(player, gameWorldIniter.center);
         // 在不同游戏阶段进入世界的游戏模式
         if (state == GameState.PRE_GAMING || state == GameState.OVER_WOLF_WIN || state == GameState.OVER_VILLAGER_WIN) {
             player.setGameMode(GameMode.SURVIVAL);
@@ -378,18 +357,18 @@ public final class WolfKill extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         Location newLocation = player.getLocation();
         Location horizontalizedLocation = newLocation.clone();
-        horizontalizedLocation.setY(center.getY());
+        horizontalizedLocation.setY(gameWorldIniter.center.getY());
 
         // 检查玩家是否在主世界或者会议世界中
-        if (newLocation.getWorld().getUID() != overworld.getUID() && newLocation.getWorld().getUID() != meetingWorld.getUID()) {
+        if (newLocation.getWorld().getUID() != gameworld.getUID() && newLocation.getWorld().getUID() != meetingWorld.getUID()) {
             Bukkit.broadcast(Component.text(String.format("广播：玩家 %s 试图逃离世界", player.getName())).color(TextColor.color(0xFF00D2)));
-            player.teleport(center);
+            player.teleport(gameWorldIniter.center);
             return;
         }
 
-        if (newLocation.getWorld().getUID() == overworld.getUID() && horizontalizedLocation.distance(center) > RADIUS) { // 防止超出行走范围（不计算Y轴距离）
+        if (newLocation.getWorld().getUID() == gameworld.getUID() && horizontalizedLocation.distance(gameWorldIniter.center) > RADIUS) { // 防止超出行走范围（不计算Y轴距离）
             player.teleport(playerLastLocation.get(player));
-        } else if (newLocation.getWorld().getUID() == overworld.getUID()) { // 在主世界内且在游走范围内则保存位置
+        } else if (newLocation.getWorld().getUID() == gameworld.getUID()) { // 在主世界内且在游走范围内则保存位置
             playerLastLocation.put(player, newLocation);
         }
     }
@@ -424,7 +403,7 @@ public final class WolfKill extends JavaPlugin implements Listener {
             player.clearActivePotionEffects();
             player.setSaturation(20);
             player.setFoodLevel(20);
-            player.teleport(center);
+            player.teleport(gameWorldIniter.center);
             // 开局隐身和保持血量一段时间
             player.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, STARTING_EFFECT_DURATION * 20, 1, true, false));
             player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, STARTING_EFFECT_DURATION * 20, 3, true, false));
