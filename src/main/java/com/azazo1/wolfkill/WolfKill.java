@@ -79,8 +79,9 @@ public final class WolfKill extends JavaPlugin implements Listener {
         // 初始化游戏世界
         gameWorldIniter = new GameWorldIniter();
         gameworld = gameWorldIniter.initWorld();
-        gameWorldIniter.selectCenter();
-        gameWorldIniter.selectBeacons();
+        if (gameworld == null) {
+            return;
+        }
         // 初始化信标奖励
         beaconRewards.add(new ItemStack(Material.CREEPER_SPAWN_EGG, 1));
         ItemStack killingSword = new ItemStack(Material.GOLDEN_SWORD, 1);
@@ -228,6 +229,9 @@ public final class WolfKill extends JavaPlugin implements Listener {
             setVillagerWin();
         } else if (!villagerHasAlive && wolfHasAlive) {
             Bukkit.broadcast(Component.text("广播：村民被歼灭"));
+            setWolfWin();
+        } else if (!villagerHasAlive) { // 说明全死光了 可能是单人游戏
+            Bukkit.broadcast(Component.text("广播：奇怪的游戏结果，可能是单人开启游戏所致"));
             setWolfWin();
         }
     }
@@ -393,6 +397,12 @@ public final class WolfKill extends JavaPlugin implements Listener {
     }
 
     public void startGame() {
+        if (gameworld != null) { // 卸载上一局游戏世界
+            Bukkit.unloadWorld(gameworld, true);
+        }
+        gameworld = gameWorldIniter.initWorld(); // 加载新一局游戏世界
+        gameWorldIniter.tpAllPlayersIn();
+
         state = GameState.GAMING;
         // 选定玩家当狼人(四个玩家就一个狼人，五个及以上就两个狼人）
         var players = Bukkit.getOnlinePlayers();
